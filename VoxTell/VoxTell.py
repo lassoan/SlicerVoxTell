@@ -58,6 +58,9 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self._parameterNode = None
         self._updatingGUIFromParameterNode = False
         self._didFirstEnterCheck = False
+        self._applyShortcuts = []
+        self._previousPromptsText = ""
+        self._hasCompletedFirstSegmentation = False
 
     def setup(self):
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -87,16 +90,28 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.installDependenciesButton.connect("clicked(bool)", self.onInstallDependenciesButton)
         self.ui.modelPathBrowseButton.connect("clicked(bool)", self.onBrowseModelPath)
         self.ui.downloadModelButton.connect("clicked(bool)", self.onDownloadModel)
+        self.ui.removeSegmentButton.connect("clicked(bool)", self.onRemoveSegmentButton)
+        self.ui.removeAllSegmentsButton.connect("clicked(bool)", self.onRemoveAllSegmentsButton)
+        self.ui.restorePreviousPromptButton.connect("clicked(bool)", self.onRestorePreviousPromptButton)
+
+        self.setupKeyboardShortcuts(uiWidget)
 
         self.initializeParameterNode()
         self.updateSetupStatus(collapseIfReady=True, collapseModelIfValid=True)
+        if hasattr(self.ui, "resultsCollapsibleButton"):
+            self.ui.resultsCollapsibleButton.collapsed = True
         self.updateApplyButtonState()
         self.updateDeviceMemoryWarning()
+        self.updateSegmentListWidget()
+        self.updateRestorePromptButtonState()
 
     def cleanup(self):
         """Called when the application closes and the module widget is destroyed."""
         if self.logic:
             self.logic.clearCaches()
+        for shortcut in self._applyShortcuts:
+            shortcut.setParent(None)
+        self._applyShortcuts = []
         self.setParameterNode(None)
         self.removeObservers()
 
@@ -111,15 +126,34 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """Called each time the user exits this module."""
         pass
 
+    def setupKeyboardShortcuts(self, parentWidget):
+        for keySequence in ("Ctrl+Return", "Ctrl+Enter"):
+            shortcut = qt.QShortcut(qt.QKeySequence(keySequence), parentWidget)
+            shortcut.setContext(qt.Qt.WidgetWithChildrenShortcut)
+            shortcut.connect("activated()", self.onApplyShortcutActivated)
+            self._applyShortcuts.append(shortcut)
+
+    def onApplyShortcutActivated(self):
+        if not self.ui.applyButton.enabled:
+            return
+        self.onApplyButton()
+
     def onInputVolumeChanged(self, node):
         self.updateParameterNodeFromGUI()
         self.updateApplyButtonState()
 
     def onOutputSegmentationChanged(self, node):
         self.updateParameterNodeFromGUI()
+        self.updateSegmentListWidget()
 
     def onPromptsTextChanged(self):
         self.updateParameterNodeFromGUI()
+
+    def onRestorePreviousPromptButton(self):
+        if not self._previousPromptsText:
+            return
+        self.ui.promptsTextEdit.setPlainText(self._previousPromptsText)
+        self.updateRestorePromptButtonState()
 
     def initializeParameterNode(self):
         self.setParameterNode(self.logic.getParameterNode())
@@ -163,6 +197,7 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self._updatingGUIFromParameterNode = False
 
         self.updateApplyButtonState()
+        self.updateSegmentListWidget()
 
     def updateParameterNodeFromGUI(self):
         if not self._parameterNode or self._updatingGUIFromParameterNode:
@@ -194,11 +229,88 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         cursor = self.ui.segmentationStatusTextEdit.textCursor()
         cursor.movePosition(qt.QTextCursor.End)
         self.ui.segmentationStatusTextEdit.setTextCursor(cursor)
+        self.ui.segmentationStatusTextEdit.ensureCursorVisible()
+        self.ui.segmentationStatusTextEdit.viewport().update()
+        self.ui.segmentationStatusTextEdit.repaint()
+        qt.QCoreApplication.processEvents(qt.QEventLoop.ExcludeUserInputEvents)
 
     def updateApplyButtonState(self):
         inputVolume = self.ui.inputVolumeSelector.currentNode()
         prompts = self.ui.promptsTextEdit.toPlainText().strip()
         self.ui.applyButton.enabled = (inputVolume is not None and len(prompts) > 0)
+
+    def updateRestorePromptButtonState(self):
+        if not hasattr(self.ui, "restorePreviousPromptButton"):
+            return
+        self.ui.restorePreviousPromptButton.enabled = len(self._previousPromptsText.strip()) > 0
+
+    def updateSegmentListWidget(self):
+        if not hasattr(self.ui, "segmentTableView"):
+            return
+
+        segmentTableView = self.ui.segmentTableView
+        segmentationNode = self.ui.outputSegmentationSelector.currentNode()
+        segmentTableView.setSegmentationNode(segmentationNode)
+
+    def _selectedSegmentIdsInTable(self):
+        if not hasattr(self.ui, "segmentTableView"):
+            return []
+
+        segmentTableView = self.ui.segmentTableView
+        if not hasattr(segmentTableView, "selectedSegmentIDs"):
+            return []
+
+        selectedIds = segmentTableView.selectedSegmentIDs()
+        if selectedIds is None:
+            return []
+
+        if isinstance(selectedIds, (list, tuple)):
+            return [str(segmentId) for segmentId in selectedIds if segmentId]
+
+        if hasattr(selectedIds, "GetNumberOfValues") and hasattr(selectedIds, "GetValue"):
+            return [selectedIds.GetValue(i) for i in range(selectedIds.GetNumberOfValues())]
+
+        try:
+            return [str(segmentId) for segmentId in selectedIds]
+        except Exception:
+            return []
+
+    def onRemoveSegmentButton(self):
+        segmentationNode = self.ui.outputSegmentationSelector.currentNode()
+        if segmentationNode is None:
+            slicer.util.errorDisplay(_("Please select an output segmentation first."))
+            return
+
+        selectedSegmentIds = self._selectedSegmentIdsInTable()
+        if not selectedSegmentIds:
+            slicer.util.errorDisplay(_("Please select at least one segment in the segments table."))
+            return
+
+        segmentation = segmentationNode.GetSegmentation()
+        removedCount = 0
+        for segmentId in selectedSegmentIds:
+            if segmentation.GetSegment(segmentId):
+                segmentation.RemoveSegment(segmentId)
+                removedCount += 1
+
+        self.updateSegmentListWidget()
+        self.appendStatusMessage(_("Removed {0} segment(s).").format(removedCount))
+
+    def onRemoveAllSegmentsButton(self):
+        segmentationNode = self.ui.outputSegmentationSelector.currentNode()
+        if segmentationNode is None:
+            slicer.util.errorDisplay(_("Please select an output segmentation first."))
+            return
+
+        segmentation = segmentationNode.GetSegmentation()
+        segmentCount = segmentation.GetNumberOfSegments()
+        if segmentCount == 0:
+            self.appendStatusMessage(_("No segments to remove."))
+            return
+
+        segmentation.RemoveAllSegments()
+        self.updateSegmentListWidget()
+        self.appendStatusMessage(_("Removed all segments ({0}).").format(segmentCount))
 
     def updateDeviceMemoryWarning(self, _index=None):
         if not hasattr(self.ui, "statusLabel"):
@@ -303,12 +415,14 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         outputSegmentation = self.ui.outputSegmentationSelector.currentNode()
 
-        promptsText = self.ui.promptsTextEdit.toPlainText().strip()
-        if not promptsText:
+        promptsText = self.ui.promptsTextEdit.toPlainText()
+        if not promptsText.strip():
             slicer.util.errorDisplay(_("Please enter at least one text prompt."))
             return
 
         prompts = [p.strip() for p in promptsText.splitlines() if p.strip()]
+        self._previousPromptsText = promptsText
+        self.updateRestorePromptButtonState()
 
         modelPath = self.ui.modelPathLineEdit.text.strip()
         if not modelPath:
@@ -336,6 +450,11 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 statusCallback=self.appendStatusMessage,
             )
             self.ui.outputSegmentationSelector.setCurrentNode(segmentationNode)
+            self.updateSegmentListWidget()
+            self.ui.promptsTextEdit.clear()
+            if not self._hasCompletedFirstSegmentation and hasattr(self.ui, "resultsCollapsibleButton"):
+                self.ui.resultsCollapsibleButton.collapsed = False
+                self._hasCompletedFirstSegmentation = True
             self.appendStatusMessage(_("Segmentation completed successfully."))
             self.appendStatusMessage(_("Output segmentation: ") + segmentationNode.GetName())
         except Exception as e:
@@ -939,12 +1058,8 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
 
             if outputSegmentationNode is not None:
                 segmentationNode = outputSegmentationNode
-                clearStartTime = time.perf_counter()
-                segmentationNode.GetSegmentation().RemoveAllSegments()
-                clearSec = time.perf_counter() - clearStartTime
-                logging.info("Cleared existing segmentation in %.2f s.", clearSec)
                 if statusCallback:
-                    statusCallback(_("Updating existing segmentation: ") + segmentationNode.GetName())
+                    statusCallback(_("Updating existing segmentation (preserving existing segments): ") + segmentationNode.GetName())
             else:
                 # Create a segmentation node in Slicer
                 segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
@@ -969,6 +1084,21 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
                 segmentStartTime = time.perf_counter()
                 if statusCallback:
                     statusCallback(_("Creating segment: ") + prompt)
+
+                existingSegmentId = None
+                for segmentIndex in range(segmentation.GetNumberOfSegments()):
+                    segmentId = segmentation.GetNthSegmentID(segmentIndex)
+                    existingSegment = segmentation.GetSegment(segmentId)
+                    if existingSegment and existingSegment.GetName() == prompt:
+                        existingSegmentId = segmentId
+                        break
+
+                if existingSegmentId is not None:
+                    segmentation.RemoveSegment(existingSegmentId)
+                    logging.info("Removed existing segment with same name before update: '%s'.", prompt)
+                    if statusCallback:
+                        statusCallback(_("Replacing existing segment: ") + prompt)
+
                 maskArray = voxtellSeg[i].astype(np.uint8)
 
                 # Restore mask from the reoriented RAS space back to the original image orientation
