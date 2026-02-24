@@ -141,7 +141,7 @@
          <bool>false</bool>
         </property>
         <property name="noneEnabled">
-         <bool>true</bool>
+         <bool>false</bool>
         </property>
         <property name="showHidden">
          <bool>false</bool>
@@ -223,6 +223,22 @@ spleen</string>
      </property>
     </widget>
    </item>
+  <item>
+   <widget class="QPlainTextEdit" name="segmentationStatusTextEdit">
+    <property name="readOnly">
+     <bool>true</bool>
+    </property>
+    <property name="placeholderText">
+     <string>Segmentation status and output messages appear here.</string>
+    </property>
+    <property name="minimumSize">
+     <size>
+      <width>0</width>
+      <height>100</height>
+     </size>
+    </property>
+   </widget>
+  </item>
    <item>
     <widget class="QLabel" name="statusLabel">
      <property name="text">

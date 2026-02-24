@@ -80,6 +80,7 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.downloadModelButton.connect("clicked(bool)", self.onDownloadModel)
 
         self.updateSetupStatus()
+        self.selectDefaultInputVolume()
         self.updateApplyButtonState()
 
     def cleanup(self):
@@ -96,6 +97,21 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onInputVolumeChanged(self, node):
         self.updateApplyButtonState()
+
+    def selectDefaultInputVolume(self):
+        if self.ui.inputVolumeSelector.currentNode():
+            return
+        firstVolumeNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
+        if firstVolumeNode:
+            self.ui.inputVolumeSelector.setCurrentNode(firstVolumeNode)
+
+    def appendStatusMessage(self, message):
+        if not hasattr(self.ui, "segmentationStatusTextEdit"):
+            return
+        self.ui.segmentationStatusTextEdit.appendPlainText(message)
+        cursor = self.ui.segmentationStatusTextEdit.textCursor()
+        cursor.movePosition(qt.QTextCursor.End)
+        self.ui.segmentationStatusTextEdit.setTextCursor(cursor)
 
     def updateApplyButtonState(self):
         inputVolume = self.ui.inputVolumeSelector.currentNode()
@@ -183,12 +199,27 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         deviceIndex = self.ui.deviceComboBox.currentIndex
         useGpu = (deviceIndex == 0)
+        deviceText = _("GPU (CUDA)") if useGpu else _("CPU")
+
+        self.ui.segmentationStatusTextEdit.clear()
+        self.appendStatusMessage(_("Starting segmentation..."))
+        self.appendStatusMessage(_("Input volume: ") + inputVolume.GetName())
+        self.appendStatusMessage(_("Device: ") + deviceText)
+        self.appendStatusMessage(_("Prompts: ") + ", ".join(prompts))
 
         qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
         try:
-            segmentationNode = self.logic.runSegmentation(inputVolume, prompts, modelPath, useGpu)
-            slicer.util.infoDisplay(_("Segmentation completed successfully."))
+            segmentationNode = self.logic.runSegmentation(
+                inputVolume,
+                prompts,
+                modelPath,
+                useGpu,
+                statusCallback=self.appendStatusMessage,
+            )
+            self.appendStatusMessage(_("Segmentation completed successfully."))
+            self.appendStatusMessage(_("Created segmentation: ") + segmentationNode.GetName())
         except Exception as e:
+            self.appendStatusMessage(_("Segmentation failed: ") + str(e))
             slicer.util.errorDisplay(_("Segmentation failed:\n") + str(e))
             import traceback
             logging.error(traceback.format_exc())
@@ -281,13 +312,14 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
         logging.info(f"Model downloaded to: {modelPath}")
         return modelPath
 
-    def runSegmentation(self, inputVolumeNode, textPrompts, modelPath, useGpu=True):
+    def runSegmentation(self, inputVolumeNode, textPrompts, modelPath, useGpu=True, statusCallback=None):
         """Run VoxTell segmentation.
 
         :param inputVolumeNode: Input vtkMRMLScalarVolumeNode.
         :param textPrompts: List of text prompts (strings).
         :param modelPath: Path to the VoxTell model directory.
         :param useGpu: Whether to use GPU for inference.
+        :param statusCallback: Optional callable that receives status text updates.
         :return: The created vtkMRMLSegmentationNode.
         """
         import torch
@@ -301,6 +333,8 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
         else:
             device = torch.device("cpu")
         logging.info(f"Using device: {device}")
+        if statusCallback:
+            statusCallback(_("Using device: ") + str(device))
 
         # Export the volume to a temporary NIfTI file
         with tempfile.TemporaryDirectory() as tmpDir:
@@ -318,10 +352,14 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
                 model_dir=modelPath,
                 device=device,
             )
+            if statusCallback:
+                statusCallback(_("Model loaded. Running prediction..."))
 
             # Run prediction - output shape: (num_prompts, x, y, z)
             logging.info(f"Running VoxTell prediction with prompts: {textPrompts}")
             voxtellSeg = predictor.predict_single_image(img, textPrompts)
+            if statusCallback:
+                statusCallback(_("Prediction completed."))
 
             # Create a segmentation node in Slicer
             segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
@@ -331,6 +369,8 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
 
             # Add each prompt result as a segment
             for i, prompt in enumerate(textPrompts):
+                if statusCallback:
+                    statusCallback(_("Creating segment: ") + prompt)
                 maskArray = voxtellSeg[i].astype(np.uint8)
 
                 # Restore mask from the reoriented RAS space back to the original image orientation
@@ -358,6 +398,8 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
 
         # Show segmentation in 3D
         segmentationNode.CreateClosedSurfaceRepresentation()
+        if statusCallback:
+            statusCallback(_("3D surface representation created."))
 
         return segmentationNode
 
