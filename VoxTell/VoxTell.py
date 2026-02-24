@@ -80,6 +80,7 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.modelPathBrowseButton.connect("clicked(bool)", self.onBrowseModelPath)
         self.ui.downloadModelButton.connect("clicked(bool)", self.onDownloadModel)
 
+        self.updateSetupStatus()
         self.updateApplyButtonState()
 
     def cleanup(self):
@@ -102,11 +103,33 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         prompts = self.ui.promptsTextEdit.toPlainText().strip()
         self.ui.applyButton.enabled = (inputVolume is not None and len(prompts) > 0)
 
+    def updateSetupStatus(self):
+        """Update the status labels in the Setup section."""
+        if self.logic.areDependenciesInstalled():
+            self.ui.dependenciesStatusLabel.text = _("Installed")
+            self.ui.dependenciesStatusLabel.setStyleSheet("color: green")
+        else:
+            self.ui.dependenciesStatusLabel.text = _("Not installed")
+            self.ui.dependenciesStatusLabel.setStyleSheet("color: red")
+
+        modelPath = self.ui.modelPathLineEdit.text.strip() or self.logic.defaultModelPath()
+        if self.logic.isModelInstalled(modelPath):
+            self.ui.modelStatusLabel.text = _("Installed")
+            self.ui.modelStatusLabel.setStyleSheet("color: green")
+            if not self.ui.modelPathLineEdit.text.strip():
+                self.ui.modelPathLineEdit.text = self.logic.defaultModelPath()
+        else:
+            self.ui.modelStatusLabel.text = _("Not installed")
+            self.ui.modelStatusLabel.setStyleSheet("color: red")
+
     def onInstallDependenciesButton(self):
         qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
         try:
             self.logic.setupPythonRequirements()
-            slicer.util.infoDisplay(_("Dependencies installed successfully."))
+            if not self.ui.modelPathLineEdit.text.strip() and self.logic.isModelInstalled(self.logic.defaultModelPath()):
+                self.ui.modelPathLineEdit.text = self.logic.defaultModelPath()
+            self.updateSetupStatus()
+            slicer.util.infoDisplay(_("Dependencies and model installed successfully."))
         except Exception as e:
             slicer.util.errorDisplay(_("Failed to install dependencies:\n") + str(e))
         finally:
@@ -134,6 +157,7 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         try:
             modelPath = self.logic.downloadModel(downloadDir)
             self.ui.modelPathLineEdit.text = modelPath
+            self.updateSetupStatus()
             slicer.util.infoDisplay(_("Model downloaded successfully to:\n") + modelPath)
         except Exception as e:
             slicer.util.errorDisplay(_("Failed to download model:\n") + str(e))
@@ -186,11 +210,28 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
     """
 
+    MODEL_NAME = "voxtell_v1.1"
+
     def __init__(self):
         ScriptedLoadableModuleLogic.__init__(self)
 
+    def defaultModelPath(self):
+        """Return the default path where the VoxTell model is stored."""
+        return os.path.join(slicer.app.userDataDirectory(), "voxtell", self.MODEL_NAME)
+
+    def areDependenciesInstalled(self):
+        """Check if the required Python packages are installed."""
+        import importlib.util
+        return importlib.util.find_spec("voxtell") is not None
+
+    def isModelInstalled(self, modelPath=None):
+        """Check if the VoxTell model is installed at the given path."""
+        if modelPath is None:
+            modelPath = self.defaultModelPath()
+        return bool(modelPath) and os.path.isdir(modelPath) and len(os.listdir(modelPath)) > 0
+
     def setupPythonRequirements(self):
-        """Install required Python packages if they are not already installed."""
+        """Install required Python packages and download the AI model if not already installed."""
         import importlib.util
 
         # Install voxtell (this will also install nnunetv2 and other dependencies)
@@ -207,7 +248,13 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
         else:
             logging.info("huggingface_hub is already installed.")
 
-    def downloadModel(self, downloadDir, modelName="voxtell_v1.1"):
+        # Download model to default location if not already installed
+        if not self.isModelInstalled():
+            modelPath = self.defaultModelPath()
+            os.makedirs(os.path.dirname(modelPath), exist_ok=True)
+            self.downloadModel(os.path.dirname(modelPath))
+
+    def downloadModel(self, downloadDir, modelName=None):
         """Download VoxTell model weights from Hugging Face.
 
         :param downloadDir: Directory where the model will be downloaded.
@@ -215,7 +262,11 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
             See https://huggingface.co/mrokuss/VoxTell for available versions.
         :return: Path to the downloaded model directory.
         """
-        self.setupPythonRequirements()
+        if modelName is None:
+            modelName = self.MODEL_NAME
+        import importlib.util
+        if importlib.util.find_spec("huggingface_hub") is None:
+            slicer.util.pip_install("huggingface_hub")
 
         from huggingface_hub import snapshot_download
         logging.info(f"Downloading VoxTell model '{modelName}' to '{downloadDir}'...")
