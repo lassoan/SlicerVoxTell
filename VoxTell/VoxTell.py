@@ -217,7 +217,10 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
 
     def defaultModelPath(self):
         """Return the default path where the VoxTell model is stored."""
-        return os.path.join(slicer.app.userDataDirectory(), "voxtell", self.MODEL_NAME)
+        userDataDirectory = qt.QStandardPaths.writableLocation(qt.QStandardPaths.AppDataLocation)
+        if not userDataDirectory:
+            userDataDirectory = os.path.expanduser("~")
+        return os.path.join(userDataDirectory, "voxtell", self.MODEL_NAME)
 
     def areDependenciesInstalled(self):
         """Check if the required Python packages are installed."""
