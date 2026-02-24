@@ -3,7 +3,6 @@ import os
 import sys
 import tempfile
 
-import vtk
 import qt
 import slicer
 from slicer.i18n import tr as _
@@ -311,7 +310,8 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
             # Load image using NibabelIOWithReorient, which automatically reorients
             # the image to RAS orientation as required by VoxTell for correct
             # anatomical localization (e.g., distinguishing left from right).
-            img, _ = NibabelIOWithReorient().read_images([inputNiftiPath])
+            imageIO = NibabelIOWithReorient()
+            img, imageProperties = imageIO.read_images([inputNiftiPath])
 
             # Initialize predictor
             predictor = VoxTellPredictor(
@@ -323,43 +323,38 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
             logging.info(f"Running VoxTell prediction with prompts: {textPrompts}")
             voxtellSeg = predictor.predict_single_image(img, textPrompts)
 
-        # Create a segmentation node in Slicer
-        segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
-        segmentationNode.SetName(inputVolumeNode.GetName() + "_VoxTell")
-        segmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(inputVolumeNode)
-        segmentationNode.CreateDefaultDisplayNodes()
+            # Create a segmentation node in Slicer
+            segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+            segmentationNode.SetName(inputVolumeNode.GetName() + "_VoxTell")
+            segmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(inputVolumeNode)
+            segmentationNode.CreateDefaultDisplayNodes()
 
-        # Add each prompt result as a segment
-        for i, prompt in enumerate(textPrompts):
-            maskArray = voxtellSeg[i].astype(np.uint8)
+            # Add each prompt result as a segment
+            for i, prompt in enumerate(textPrompts):
+                maskArray = voxtellSeg[i].astype(np.uint8)
 
-            # Create a label map volume node from the mask
-            labelVolumeNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
-            labelVolumeNode.SetName(f"tmp_{prompt}")
+                # Restore mask from the reoriented RAS space back to the original image orientation
+                # before loading into Slicer to avoid RAS/LPS flips.
+                maskNiftiPath = os.path.join(tmpDir, f"mask_{i}.nii.gz")
+                imageIO.write_seg(maskArray, maskNiftiPath, imageProperties)
 
-            # Copy geometry from input volume
-            labelVolumeNode.CopyOrientation(inputVolumeNode)
-            labelVolumeNode.SetSpacing(inputVolumeNode.GetSpacing())
-            labelVolumeNode.SetOrigin(inputVolumeNode.GetOrigin())
-            ijkToRASDirections = vtk.vtkMatrix4x4()
-            inputVolumeNode.GetIJKToRASDirectionMatrix(ijkToRASDirections)
-            labelVolumeNode.SetIJKToRASDirectionMatrix(ijkToRASDirections)
+                loaded, labelVolumeNode = slicer.util.loadLabelVolume(maskNiftiPath, returnNode=True)
+                if not loaded or labelVolumeNode is None:
+                    raise RuntimeError(f"Failed to load generated label volume: {maskNiftiPath}")
 
-            # Set voxel data
-            slicer.util.updateVolumeFromArray(labelVolumeNode, maskArray)
+                try:
+                    # Import label map into segmentation
+                    slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
+                        labelVolumeNode, segmentationNode
+                    )
 
-            # Import label map into segmentation
-            slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
-                labelVolumeNode, segmentationNode
-            )
-
-            # Rename the last added segment to the prompt text
-            segmentation = segmentationNode.GetSegmentation()
-            lastSegmentId = segmentation.GetNthSegmentID(segmentation.GetNumberOfSegments() - 1)
-            segmentation.GetSegment(lastSegmentId).SetName(prompt)
-
-            # Remove the temporary label map node
-            slicer.mrmlScene.RemoveNode(labelVolumeNode)
+                    # Rename the last added segment to the prompt text
+                    segmentation = segmentationNode.GetSegmentation()
+                    lastSegmentId = segmentation.GetNthSegmentID(segmentation.GetNumberOfSegments() - 1)
+                    segmentation.GetSegment(lastSegmentId).SetName(prompt)
+                finally:
+                    # Remove the temporary label map node
+                    slicer.mrmlScene.RemoveNode(labelVolumeNode)
 
         # Show segmentation in 3D
         segmentationNode.CreateClosedSurfaceRepresentation()
