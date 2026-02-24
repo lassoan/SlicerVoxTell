@@ -6,6 +6,7 @@ import tempfile
 
 import qt
 import slicer
+import vtk
 from slicer.i18n import tr as _
 from slicer.i18n import translate
 from slicer.ScriptedLoadableModule import *
@@ -53,6 +54,8 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)
         self.logic = None
+        self._parameterNode = None
+        self._updatingGUIFromParameterNode = False
         self._didFirstEnterCheck = False
 
     def setup(self):
@@ -75,24 +78,28 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         # Connections
         self.ui.inputVolumeSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.onInputVolumeChanged)
+        self.ui.outputSegmentationSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.onOutputSegmentationChanged)
         self.ui.promptsTextEdit.connect("textChanged()", self.updateApplyButtonState)
+        self.ui.promptsTextEdit.connect("textChanged()", self.onPromptsTextChanged)
         self.ui.deviceComboBox.connect("currentIndexChanged(int)", self.updateDeviceMemoryWarning)
         self.ui.applyButton.connect("clicked(bool)", self.onApplyButton)
         self.ui.installDependenciesButton.connect("clicked(bool)", self.onInstallDependenciesButton)
         self.ui.modelPathBrowseButton.connect("clicked(bool)", self.onBrowseModelPath)
         self.ui.downloadModelButton.connect("clicked(bool)", self.onDownloadModel)
 
+        self.initializeParameterNode()
         self.updateSetupStatus(collapseIfReady=True, collapseModelIfValid=True)
-        self.selectDefaultInputVolume()
         self.updateApplyButtonState()
         self.updateDeviceMemoryWarning()
 
     def cleanup(self):
         """Called when the application closes and the module widget is destroyed."""
+        self.setParameterNode(None)
         self.removeObservers()
 
     def enter(self):
         """Called each time the user opens this module."""
+        self.initializeParameterNode()
         firstEnter = not self._didFirstEnterCheck
         self.updateSetupStatus(collapseIfReady=firstEnter, collapseModelIfValid=firstEnter)
         self._didFirstEnterCheck = True
@@ -102,7 +109,73 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         pass
 
     def onInputVolumeChanged(self, node):
+        self.updateParameterNodeFromGUI()
         self.updateApplyButtonState()
+
+    def onOutputSegmentationChanged(self, node):
+        self.updateParameterNodeFromGUI()
+
+    def onPromptsTextChanged(self):
+        self.updateParameterNodeFromGUI()
+
+    def initializeParameterNode(self):
+        self.setParameterNode(self.logic.getParameterNode())
+        if not self._parameterNode.GetNodeReference("InputVolume"):
+            self.selectDefaultInputVolume()
+            inputNode = self.ui.inputVolumeSelector.currentNode()
+            if inputNode:
+                self._parameterNode.SetNodeReferenceID("InputVolume", inputNode.GetID())
+
+    def setParameterNode(self, inputParameterNode):
+        if self._parameterNode:
+            self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self.onParameterNodeModified)
+        self._parameterNode = inputParameterNode
+        if self._parameterNode:
+            self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self.onParameterNodeModified)
+        self.updateGUIFromParameterNode()
+
+    def onParameterNodeModified(self, caller=None, event=None):
+        self.updateGUIFromParameterNode()
+
+    def updateGUIFromParameterNode(self):
+        if not self._parameterNode or self._updatingGUIFromParameterNode:
+            return
+
+        self._updatingGUIFromParameterNode = True
+        try:
+            inputVolumeNode = self._parameterNode.GetNodeReference("InputVolume")
+            if self.ui.inputVolumeSelector.currentNode() != inputVolumeNode:
+                self.ui.inputVolumeSelector.setCurrentNode(inputVolumeNode)
+
+            outputSegmentationNode = self._parameterNode.GetNodeReference("OutputSegmentation")
+            if self.ui.outputSegmentationSelector.currentNode() != outputSegmentationNode:
+                self.ui.outputSegmentationSelector.setCurrentNode(outputSegmentationNode)
+
+            promptsText = self._parameterNode.GetParameter("PromptsText")
+            if promptsText is None:
+                promptsText = ""
+            if self.ui.promptsTextEdit.toPlainText() != promptsText:
+                self.ui.promptsTextEdit.setPlainText(promptsText)
+        finally:
+            self._updatingGUIFromParameterNode = False
+
+        self.updateApplyButtonState()
+
+    def updateParameterNodeFromGUI(self):
+        if not self._parameterNode or self._updatingGUIFromParameterNode:
+            return
+
+        wasModified = self._parameterNode.StartModify()
+        try:
+            inputVolumeNode = self.ui.inputVolumeSelector.currentNode()
+            self._parameterNode.SetNodeReferenceID("InputVolume", inputVolumeNode.GetID() if inputVolumeNode else None)
+
+            outputSegmentationNode = self.ui.outputSegmentationSelector.currentNode()
+            self._parameterNode.SetNodeReferenceID("OutputSegmentation", outputSegmentationNode.GetID() if outputSegmentationNode else None)
+
+            self._parameterNode.SetParameter("PromptsText", self.ui.promptsTextEdit.toPlainText())
+        finally:
+            self._parameterNode.EndModify(wasModified)
 
     def selectDefaultInputVolume(self):
         if self.ui.inputVolumeSelector.currentNode():
