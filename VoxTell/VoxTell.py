@@ -579,7 +579,7 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
         imageIO = NibabelIOWithReorient()
         preprocessStartTime = time.perf_counter()
         with tempfile.TemporaryDirectory() as tmpDir:
-            inputNiftiPath = os.path.join(tmpDir, "input.nii.gz")
+            inputNiftiPath = os.path.join(tmpDir, "input.nii")
             slicer.util.exportNode(inputVolumeNode, inputNiftiPath)
             img, imageProperties = imageIO.read_images([inputNiftiPath])
             preprocessedData, preprocessedBbox, preprocessedOrigShape = predictor.preprocess(img)
@@ -1071,7 +1071,9 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
             segmentationNode.CreateDefaultDisplayNodes()
             segmentation = segmentationNode.GetSegmentation()
             closedSurfaceRepresentationName = slicer.vtkSegmentationConverter.GetSegmentationClosedSurfaceRepresentationName()
+            recreateClosedSurface = False
             if segmentation.ContainsRepresentation(closedSurfaceRepresentationName):
+                recreateClosedSurface = True
                 removeClosedSurfaceStartTime = time.perf_counter()
                 segmentation.RemoveRepresentation(closedSurfaceRepresentationName)
                 removeClosedSurfaceSec = time.perf_counter() - removeClosedSurfaceStartTime
@@ -1085,25 +1087,11 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
                 if statusCallback:
                     statusCallback(_("Creating segment: ") + prompt)
 
-                existingSegmentId = None
-                for segmentIndex in range(segmentation.GetNumberOfSegments()):
-                    segmentId = segmentation.GetNthSegmentID(segmentIndex)
-                    existingSegment = segmentation.GetSegment(segmentId)
-                    if existingSegment and existingSegment.GetName() == prompt:
-                        existingSegmentId = segmentId
-                        break
-
-                if existingSegmentId is not None:
-                    segmentation.RemoveSegment(existingSegmentId)
-                    logging.info("Removed existing segment with same name before update: '%s'.", prompt)
-                    if statusCallback:
-                        statusCallback(_("Replacing existing segment: ") + prompt)
-
                 maskArray = voxtellSeg[i].astype(np.uint8)
 
                 # Restore mask from the reoriented RAS space back to the original image orientation
                 # before loading into Slicer to avoid RAS/LPS flips.
-                maskNiftiPath = os.path.join(tmpDir, f"mask_{i}.nii.gz")
+                maskNiftiPath = os.path.join(tmpDir, f"mask_{i}.nii")
                 imageIO.write_seg(maskArray, maskNiftiPath, imageProperties)
 
                 labelVolumeNode = slicer.util.loadLabelVolume(maskNiftiPath)
@@ -1135,7 +1123,8 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
                     statusCallback(_("Segment '{0}' completed in {1:.2f} s.").format(prompt, segmentSec))
 
         # Show segmentation in 3D
-        segmentationNode.CreateClosedSurfaceRepresentation()
+        if recreateClosedSurface:
+            segmentationNode.CreateClosedSurfaceRepresentation()
         totalSegmentationSec = time.perf_counter() - segmentationStartTime
         logging.info("VoxTell segmentation pipeline completed in %.2f s.", totalSegmentationSec)
         if statusCallback:
