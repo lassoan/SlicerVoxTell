@@ -220,7 +220,11 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def updateSetupStatus(self, collapseIfReady=False, collapseModelIfValid=False):
         """Update the status labels in the Setup section."""
         dependenciesInstalled = self.logic.areDependenciesInstalled()
-        if dependenciesInstalled:
+        incompatibleTorchVersion = self.logic.incompatibleTorchVersionString()
+        if incompatibleTorchVersion:
+            self.ui.dependenciesStatusLabel.text = _("Incompatible PyTorch installed ({0}). Please install a version other than 2.9.x.").format(incompatibleTorchVersion)
+            self.ui.dependenciesStatusLabel.setStyleSheet("color: red")
+        elif dependenciesInstalled:
             self.ui.dependenciesStatusLabel.text = _("Installed")
             self.ui.dependenciesStatusLabel.setStyleSheet("color: green")
         else:
@@ -355,6 +359,7 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
 
     MODEL_NAME = "voxtell_v1.1"
     DEFAULT_TERMINOLOGY_CONTEXT = "Segmentation category and type - 3D Slicer General Anatomy list"
+    TORCH_VERSION_REQUIREMENT = "!=2.9.*"  # avoid PyTorch 2.9.x due to known compatibility issues with VoxTell as of Feb 2026
 
     def __init__(self):
         ScriptedLoadableModuleLogic.__init__(self)
@@ -441,7 +446,45 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
         return (
             importlib.util.find_spec("voxtell") is not None
             and importlib.util.find_spec("huggingface_hub") is not None
+            and self.torchVersionIsSupported()
         )
+
+    def _isTorchVersionAllowed(self, versionCore):
+        requirement = self.TORCH_VERSION_REQUIREMENT.strip()
+        if requirement.startswith("!=") and requirement.endswith(".*"):
+            disallowedPrefix = requirement[2:-2]
+            return not (versionCore == disallowedPrefix or versionCore.startswith(disallowedPrefix + "."))
+        return True
+
+    def _disallowedTorchVersionLabel(self):
+        requirement = self.TORCH_VERSION_REQUIREMENT.strip()
+        if requirement.startswith("!=") and requirement.endswith(".*"):
+            return requirement[2:-2] + ".x"
+        return requirement
+
+    def installedTorchVersionString(self):
+        import importlib.util
+        if importlib.util.find_spec("torch") is None:
+            return None
+        try:
+            import torch
+            return str(torch.__version__).split("+")[0]
+        except Exception:
+            return None
+
+    def torchVersionIsSupported(self):
+        versionCore = self.installedTorchVersionString()
+        if versionCore is None:
+            return False
+        return self._isTorchVersionAllowed(versionCore)
+
+    def incompatibleTorchVersionString(self):
+        versionCore = self.installedTorchVersionString()
+        if versionCore is None:
+            return None
+        if not self._isTorchVersionAllowed(versionCore):
+            return versionCore
+        return None
 
     def isModelInstalled(self, modelPath=None):
         """Check if the VoxTell model is installed at the given path."""
@@ -449,9 +492,61 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
             modelPath = self.defaultModelPath()
         return bool(modelPath) and os.path.isdir(modelPath) and len(os.listdir(modelPath)) > 0
 
+    def installPyTorchWithPyTorchUtils(self):
+        """Install PyTorch using the PyTorchUtils extension, enforcing TORCH_VERSION_REQUIREMENT."""
+        import inspect
+
+        if self.torchVersionIsSupported():
+            logging.info(f"torch is already installed and satisfies torch{self.TORCH_VERSION_REQUIREMENT}.")
+            return
+
+        pytorchUtilsLogic = None
+        import importlib.util
+        if importlib.util.find_spec("PyTorchUtils") is not None:
+            import PyTorchUtils
+            pytorchUtilsLogic = PyTorchUtils.PyTorchUtilsLogic()
+
+        if pytorchUtilsLogic is None:
+            pytorchUtilsModule = getattr(slicer.modules, "pytorchutils", None)
+            if pytorchUtilsModule and hasattr(pytorchUtilsModule, "logic"):
+                pytorchUtilsLogic = pytorchUtilsModule.logic()
+
+        if pytorchUtilsLogic is None:
+            raise RuntimeError(
+                "PyTorchUtils extension is required to install PyTorch. "
+                "Please install the 'PyTorch' extension from the Extension Manager, then retry."
+            )
+
+        installTorchMethod = getattr(pytorchUtilsLogic, "installTorch", None)
+        if callable(installTorchMethod):
+            logging.info(f"Installing torch using PyTorchUtils extension with requirement torch{self.TORCH_VERSION_REQUIREMENT}...")
+            installSignature = inspect.signature(installTorchMethod)
+            installParameters = installSignature.parameters
+            installKwargs = {}
+            if "askConfirmation" in installParameters:
+                installKwargs["askConfirmation"] = False
+            if "torchVersionRequirement" in installParameters:
+                installKwargs["torchVersionRequirement"] = self.TORCH_VERSION_REQUIREMENT
+            installTorchMethod(**installKwargs)
+        else:
+            logging.info("Installing torch using PyTorchUtils module logic...")
+            pytorchUtilsLogic.torch
+
+        if not self.torchVersionIsSupported():
+            try:
+                import torch
+                installedVersion = str(torch.__version__)
+            except Exception:
+                installedVersion = "unknown"
+            raise RuntimeError(
+                f"Installed torch version ({installedVersion}) does not satisfy required version constraint torch{self.TORCH_VERSION_REQUIREMENT}."
+            )
+
     def setupPythonRequirements(self):
         """Install required Python packages and download the AI model if not already installed."""
         import importlib.util
+
+        self.installPyTorchWithPyTorchUtils()
 
         # Install voxtell (this will also install nnunetv2 and other dependencies)
         if importlib.util.find_spec("voxtell") is None:
@@ -627,6 +722,8 @@ class VoxTellTest(ScriptedLoadableModuleTest):
         """Run as few or as many tests as needed here."""
         self.setUp()
         self.test_VoxTellInstantiation()
+        self.test_VoxTellLogicHelpers()
+        self.test_VoxTellSegmentationIfReady()
 
     def test_VoxTellInstantiation(self):
         """Verify that the module can be instantiated and logic created."""
@@ -634,3 +731,64 @@ class VoxTellTest(ScriptedLoadableModuleTest):
         logic = VoxTellLogic()
         self.assertIsNotNone(logic)
         self.delayDisplay("VoxTell module instantiation test passed.")
+
+    def test_VoxTellLogicHelpers(self):
+        """Verify helper methods that do not require model inference."""
+        self.delayDisplay("Testing VoxTell logic helper methods")
+        logic = VoxTellLogic()
+
+        defaultModelPath = logic.defaultModelPath()
+        self.assertTrue(isinstance(defaultModelPath, str) and len(defaultModelPath) > 0)
+
+        # Non-existent directory should not be considered a valid installed model.
+        nonExistingModelPath = os.path.join(slicer.app.temporaryPath, "VoxTellModelThatDoesNotExist")
+        self.assertFalse(logic.isModelInstalled(nonExistingModelPath))
+
+        dependenciesInstalled = logic.areDependenciesInstalled()
+        self.assertTrue(isinstance(dependenciesInstalled, bool))
+        self.delayDisplay("VoxTell logic helper methods test passed.")
+
+    def test_VoxTellSegmentationIfReady(self):
+        """Run segmentation test only if dependencies and model are already available.
+
+        If requirements are not met, this test exits successfully without running inference.
+        """
+        self.delayDisplay("Checking VoxTell runtime readiness for segmentation test")
+        logic = VoxTellLogic()
+
+        if not logic.areDependenciesInstalled():
+            self.delayDisplay("Skipping segmentation test: dependencies are not installed.")
+            return
+
+        modelPath = logic.defaultModelPath()
+        if not logic.isModelInstalled(modelPath):
+            self.delayDisplay("Skipping segmentation test: model is not downloaded.")
+            return
+
+        self.delayDisplay("Dependencies and model found. Running CTACardio segmentation test.")
+        import SampleData
+
+        inputVolumeNode = SampleData.downloadSample("CTACardio")
+        self.assertIsNotNone(inputVolumeNode)
+
+        prompts = ["left ventricle", "aorta", "ribs", "vertebrae", "liver"]
+        useGpu = False
+        try:
+            import torch
+            useGpu = torch.cuda.is_available()
+        except Exception:
+            useGpu = False
+
+        outputSegmentationNode = logic.runSegmentation(
+            inputVolumeNode=inputVolumeNode,
+            textPrompts=prompts,
+            modelPath=modelPath,
+            useGpu=useGpu,
+            outputSegmentationNode=None,
+            statusCallback=None,
+        )
+
+        self.assertIsNotNone(outputSegmentationNode)
+        segmentation = outputSegmentationNode.GetSegmentation()
+        self.assertEqual(segmentation.GetNumberOfSegments(), len(prompts))
+        self.delayDisplay("CTACardio segmentation test passed.")
