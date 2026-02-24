@@ -60,4 +60,4 @@ This extension is distributed under the **MIT License** (see [LICENSE.txt](LICEN
 ## Support and Maintenance
 
 - Maintainers monitor repository issues and pull requests.
-- Maintainers also respond to @mentions on the Slicer Forum: https://discourse.slicer.org
+- Maintainers also respond to mention of @lassoan on the Slicer Forum: https://discourse.slicer.org
