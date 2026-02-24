@@ -3,6 +3,7 @@ import os
 import random
 import sys
 import tempfile
+import time
 
 import qt
 import slicer
@@ -94,6 +95,8 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def cleanup(self):
         """Called when the application closes and the module widget is destroyed."""
+        if self.logic:
+            self.logic.clearCaches()
         self.setParameterNode(None)
         self.removeObservers()
 
@@ -360,9 +363,207 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
     MODEL_NAME = "voxtell_v1.1"
     DEFAULT_TERMINOLOGY_CONTEXT = "Segmentation category and type - 3D Slicer General Anatomy list"
     TORCH_VERSION_REQUIREMENT = "!=2.9.*"  # avoid PyTorch 2.9.x due to known compatibility issues with VoxTell as of Feb 2026
+    FAST_INFERENCE_STEP_SIZE = 0.75
 
     def __init__(self):
         ScriptedLoadableModuleLogic.__init__(self)
+        self._cachedPredictor = None
+        self._cachedPredictorModelPath = None
+        self._cachedPredictorDevice = None
+        self._cachedInputVolumeSignature = None
+        self._cachedPreprocessedData = None
+        self._cachedPreprocessedBbox = None
+        self._cachedPreprocessedOrigShape = None
+        self._cachedImageProperties = None
+        self._cachedTextEmbeddings = {}
+        self._maxCachedTextEmbeddings = 256
+
+    def clearCaches(self):
+        self._cachedPredictor = None
+        self._cachedPredictorModelPath = None
+        self._cachedPredictorDevice = None
+        self._cachedInputVolumeSignature = None
+        self._cachedPreprocessedData = None
+        self._cachedPreprocessedBbox = None
+        self._cachedPreprocessedOrigShape = None
+        self._cachedImageProperties = None
+        self._cachedTextEmbeddings.clear()
+        logging.info("Cleared VoxTell logic caches.")
+
+    def _getOrCreatePredictor(self, modelPath, device, statusCallback=None):
+        from voxtell.inference.predictor import VoxTellPredictor
+
+        requestedDevice = str(device)
+        if (
+            self._cachedPredictor is not None
+            and self._cachedPredictorModelPath == modelPath
+            and self._cachedPredictorDevice == requestedDevice
+        ):
+            logging.info("Reusing cached VoxTell predictor (%s, %s).", modelPath, requestedDevice)
+            if statusCallback:
+                statusCallback(_("Reusing already initialized model."))
+            return self._cachedPredictor
+
+        if statusCallback:
+            statusCallback(_("Loading model..."))
+        loadStartTime = time.perf_counter()
+        predictor = VoxTellPredictor(
+            model_dir=modelPath,
+            device=device,
+        )
+        modelLoadSec = time.perf_counter() - loadStartTime
+        logging.info("Loaded VoxTell predictor in %.2f s (%s, %s).", modelLoadSec, modelPath, requestedDevice)
+        if statusCallback:
+            statusCallback(_("Model loaded in {0:.2f} s.").format(modelLoadSec))
+        self._cachedPredictor = predictor
+        self._cachedPredictorModelPath = modelPath
+        self._cachedPredictorDevice = requestedDevice
+        return predictor
+
+    def _inputVolumeSignature(self, inputVolumeNode):
+        if inputVolumeNode is None:
+            return None
+
+        imageData = inputVolumeNode.GetImageData()
+        imageDataMTime = imageData.GetMTime() if imageData else None
+        dimensions = imageData.GetDimensions() if imageData else None
+        return (
+            inputVolumeNode.GetID(),
+            imageDataMTime,
+            dimensions,
+        )
+
+    def _getOrCreatePreprocessedInput(self, inputVolumeNode, predictor, statusCallback=None):
+        from nnunetv2.imageio.nibabel_reader_writer import NibabelIOWithReorient
+
+        currentSignature = self._inputVolumeSignature(inputVolumeNode)
+        if (
+            self._cachedPreprocessedData is not None
+            and self._cachedPreprocessedBbox is not None
+            and self._cachedPreprocessedOrigShape is not None
+            and self._cachedImageProperties is not None
+            and self._cachedInputVolumeSignature == currentSignature
+        ):
+            logging.info("Reusing cached preprocessed input volume.")
+            if statusCallback:
+                statusCallback(_("Reusing preprocessed input volume."))
+            return (
+                self._cachedPreprocessedData,
+                self._cachedPreprocessedBbox,
+                self._cachedPreprocessedOrigShape,
+                self._cachedImageProperties,
+            )
+
+        if statusCallback:
+            statusCallback(_("Preparing input volume..."))
+
+        imageIO = NibabelIOWithReorient()
+        preprocessStartTime = time.perf_counter()
+        with tempfile.TemporaryDirectory() as tmpDir:
+            inputNiftiPath = os.path.join(tmpDir, "input.nii.gz")
+            slicer.util.exportNode(inputVolumeNode, inputNiftiPath)
+            img, imageProperties = imageIO.read_images([inputNiftiPath])
+            preprocessedData, preprocessedBbox, preprocessedOrigShape = predictor.preprocess(img)
+        preprocessSec = time.perf_counter() - preprocessStartTime
+        logging.info(
+            "Prepared input volume in %.2f s (shape=%s, bbox=%s).",
+            preprocessSec,
+            getattr(preprocessedData, "shape", None),
+            preprocessedBbox,
+        )
+        if statusCallback:
+            statusCallback(_("Input preprocessing completed in {0:.2f} s.").format(preprocessSec))
+
+        self._cachedPreprocessedData = preprocessedData
+        self._cachedPreprocessedBbox = preprocessedBbox
+        self._cachedPreprocessedOrigShape = preprocessedOrigShape
+        self._cachedImageProperties = imageProperties
+        self._cachedInputVolumeSignature = currentSignature
+        return preprocessedData, preprocessedBbox, preprocessedOrigShape, imageProperties
+
+    def _cacheTextEmbedding(self, modelPath, device, prompt, embeddingCpu):
+        key = (modelPath, str(device), prompt)
+        self._cachedTextEmbeddings[key] = embeddingCpu
+        if len(self._cachedTextEmbeddings) > self._maxCachedTextEmbeddings:
+            oldestKey = next(iter(self._cachedTextEmbeddings))
+            del self._cachedTextEmbeddings[oldestKey]
+
+    def _getOrCreateTextEmbeddings(self, predictor, modelPath, device, textPrompts, statusCallback=None):
+        import torch
+
+        embeddingsToConcatenate = []
+        missingPrompts = []
+        missingPromptIndices = []
+        cacheHits = 0
+
+        for index, prompt in enumerate(textPrompts):
+            key = (modelPath, str(device), prompt)
+            cachedEmbedding = self._cachedTextEmbeddings.get(key)
+            if cachedEmbedding is not None:
+                cacheHits += 1
+                embeddingsToConcatenate.append(cachedEmbedding)
+            else:
+                missingPrompts.append(prompt)
+                missingPromptIndices.append(index)
+                embeddingsToConcatenate.append(None)
+
+        embedSec = 0.0
+        if missingPrompts:
+            if statusCallback:
+                statusCallback(_("Embedding {0} new prompt(s)...").format(len(missingPrompts)))
+            embedStartTime = time.perf_counter()
+            missingEmbeddings = predictor.embed_text_prompts(missingPrompts)
+            embedSec = time.perf_counter() - embedStartTime
+            missingEmbeddingsCpu = missingEmbeddings.detach().to("cpu")
+
+            for i, prompt in enumerate(missingPrompts):
+                embeddingCpu = missingEmbeddingsCpu[i:i + 1].clone()
+                self._cacheTextEmbedding(modelPath, device, prompt, embeddingCpu)
+                targetIndex = missingPromptIndices[i]
+                embeddingsToConcatenate[targetIndex] = embeddingCpu
+
+            logging.info("Embedded %d new prompt(s) in %.2f s.", len(missingPrompts), embedSec)
+
+        assembleStartTime = time.perf_counter()
+        textEmbeddings = torch.cat(embeddingsToConcatenate, dim=0).to(device)
+        assembleSec = time.perf_counter() - assembleStartTime
+        logging.info(
+            "Prepared %d prompt embedding(s): %d cache hit(s), %d new; assembly/transfer %.2f s.",
+            len(textPrompts),
+            cacheHits,
+            len(missingPrompts),
+            assembleSec,
+        )
+
+        return textEmbeddings, cacheHits, len(missingPrompts), embedSec, assembleSec
+
+    def _buildFastInferenceKwargs(self, predictor):
+        import inspect
+
+        method = predictor.predict_sliding_window_return_logits
+        parameters = inspect.signature(method).parameters
+        kwargs = {}
+
+        if "step_size" in parameters:
+            kwargs["step_size"] = self.FAST_INFERENCE_STEP_SIZE
+        if "overlap" in parameters:
+            kwargs["overlap"] = 1.0 - self.FAST_INFERENCE_STEP_SIZE
+        if "use_gaussian" in parameters:
+            kwargs["use_gaussian"] = False
+        if "do_tta" in parameters:
+            kwargs["do_tta"] = False
+        if "use_mirroring" in parameters:
+            kwargs["use_mirroring"] = False
+
+        return kwargs
+
+    def _predictSlidingWindowLogits(self, predictor, preprocessedData, textEmbeddings, statusCallback=None):
+        inferenceKwargs = self._buildFastInferenceKwargs(predictor)
+        if inferenceKwargs:
+            logging.info("Running fast sliding-window inference kwargs: %s", str(inferenceKwargs))
+            if statusCallback:
+                statusCallback(_("Using fast sliding-window settings."))
+        return predictor.predict_sliding_window_return_logits(preprocessedData, textEmbeddings, **inferenceKwargs)
 
     def _randomSegmentColor(self):
         return (random.random(), random.random(), random.random())
@@ -605,47 +806,143 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
         :return: The created vtkMRMLSegmentationNode.
         """
         import torch
-        from voxtell.inference.predictor import VoxTellPredictor
+        from acvl_utils.cropping_and_padding.bounding_boxes import insert_crop_into_image
         from nnunetv2.imageio.nibabel_reader_writer import NibabelIOWithReorient
         import numpy as np
+        segmentationStartTime = time.perf_counter()
 
         # Select device
         if useGpu and torch.cuda.is_available():
             device = torch.device("cuda:0")
         else:
             device = torch.device("cpu")
+
+        if device.type == "cuda":
+            try:
+                torch.backends.cudnn.benchmark = True
+            except Exception:
+                pass
+            try:
+                torch.backends.cudnn.allow_tf32 = True
+            except Exception:
+                pass
+            try:
+                torch.backends.cuda.matmul.allow_tf32 = True
+            except Exception:
+                pass
+            if hasattr(torch, "set_float32_matmul_precision"):
+                try:
+                    torch.set_float32_matmul_precision("high")
+                except Exception:
+                    pass
+
         logging.info(f"Using device: {device}")
         if statusCallback:
             statusCallback(_("Using device: ") + str(device))
 
-        # Export the volume to a temporary NIfTI file
+        predictor = self._getOrCreatePredictor(modelPath, device, statusCallback=statusCallback)
+        preprocessedData, preprocessedBbox, preprocessedOrigShape, imageProperties = self._getOrCreatePreprocessedInput(
+            inputVolumeNode,
+            predictor,
+            statusCallback=statusCallback,
+        )
+        imageIO = NibabelIOWithReorient()
+
+        # Use a temporary NIfTI directory for generated masks
         with tempfile.TemporaryDirectory() as tmpDir:
-            inputNiftiPath = os.path.join(tmpDir, "input.nii.gz")
-            slicer.util.exportNode(inputVolumeNode, inputNiftiPath)
-
-            # Load image using NibabelIOWithReorient, which automatically reorients
-            # the image to RAS orientation as required by VoxTell for correct
-            # anatomical localization (e.g., distinguishing left from right).
-            imageIO = NibabelIOWithReorient()
-            img, imageProperties = imageIO.read_images([inputNiftiPath])
-
-            # Initialize predictor
-            predictor = VoxTellPredictor(
-                model_dir=modelPath,
-                device=device,
+            # Run prediction using lower-level API to reuse preprocessed input
+            logging.info(f"Running VoxTell prediction with prompts: {textPrompts}")
+            if statusCallback:
+                statusCallback(_("Embedding prompts..."))
+            textEmbeddings, embeddingCacheHits, embeddedPromptCount, embedSec, embeddingAssembleSec = self._getOrCreateTextEmbeddings(
+                predictor,
+                modelPath,
+                device,
+                textPrompts,
+                statusCallback=statusCallback,
             )
             if statusCallback:
-                statusCallback(_("Model loaded. Running prediction..."))
+                statusCallback(
+                    _("Prompt embeddings ready in {0:.2f} s ({1} cached, {2} new, transfer {3:.2f} s).")
+                    .format(embedSec, embeddingCacheHits, embeddedPromptCount, embeddingAssembleSec)
+                )
 
-            # Run prediction - output shape: (num_prompts, x, y, z)
-            logging.info(f"Running VoxTell prediction with prompts: {textPrompts}")
-            voxtellSeg = predictor.predict_single_image(img, textPrompts)
+            if statusCallback:
+                statusCallback(_("Running sliding-window prediction..."))
+            inferenceStartTime = time.perf_counter()
+            ampEnabled = (device.type == "cuda")
+            if ampEnabled and statusCallback:
+                statusCallback(_("Using CUDA mixed precision for inference."))
+            try:
+                with torch.inference_mode():
+                    if ampEnabled:
+                        with torch.autocast(device_type="cuda", dtype=torch.float16):
+                            prediction = self._predictSlidingWindowLogits(
+                                predictor,
+                                preprocessedData,
+                                textEmbeddings,
+                                statusCallback=statusCallback,
+                            )
+                    else:
+                        prediction = self._predictSlidingWindowLogits(
+                            predictor,
+                            preprocessedData,
+                            textEmbeddings,
+                            statusCallback=statusCallback,
+                        )
+            except Exception as inferenceException:
+                if ampEnabled:
+                    logging.warning(
+                        "Mixed-precision inference failed, retrying in full precision. Error: %s",
+                        str(inferenceException),
+                    )
+                    if statusCallback:
+                        statusCallback(_("Mixed precision failed, retrying full-precision inference."))
+                    with torch.inference_mode():
+                        prediction = self._predictSlidingWindowLogits(
+                            predictor,
+                            preprocessedData,
+                            textEmbeddings,
+                            statusCallback=statusCallback,
+                        )
+                else:
+                    raise
+            inferenceSec = time.perf_counter() - inferenceStartTime
+            logging.info("Sliding-window inference completed in %.2f s (device=%s).", inferenceSec, str(device))
+            if statusCallback:
+                statusCallback(_("Sliding-window inference completed in {0:.2f} s.").format(inferenceSec))
+
+            transferStartTime = time.perf_counter()
+            prediction = prediction.to("cpu")
+            transferSec = time.perf_counter() - transferStartTime
+            logging.info("Transferred logits to CPU in %.2f s.", transferSec)
+            if statusCallback:
+                statusCallback(_("Transfer to CPU completed in {0:.2f} s.").format(transferSec))
+
+            thresholdStartTime = time.perf_counter()
+            with torch.no_grad():
+                prediction = torch.sigmoid(prediction.float()) > 0.5
+            thresholdSec = time.perf_counter() - thresholdStartTime
+            logging.info("Applied sigmoid/threshold in %.2f s.", thresholdSec)
+            if statusCallback:
+                statusCallback(_("Sigmoid and threshold completed in {0:.2f} s.").format(thresholdSec))
+
+            cropInsertStartTime = time.perf_counter()
+            voxtellSeg = np.zeros([prediction.shape[0], *preprocessedOrigShape], dtype=np.uint8)
+            voxtellSeg = insert_crop_into_image(voxtellSeg, prediction, preprocessedBbox)
+            cropInsertSec = time.perf_counter() - cropInsertStartTime
+            logging.info("Inserted prediction crop into full image in %.2f s.", cropInsertSec)
+            if statusCallback:
+                statusCallback(_("Post-processing crop insertion completed in {0:.2f} s.").format(cropInsertSec))
             if statusCallback:
                 statusCallback(_("Prediction completed."))
 
             if outputSegmentationNode is not None:
                 segmentationNode = outputSegmentationNode
+                clearStartTime = time.perf_counter()
                 segmentationNode.GetSegmentation().RemoveAllSegments()
+                clearSec = time.perf_counter() - clearStartTime
+                logging.info("Cleared existing segmentation in %.2f s.", clearSec)
                 if statusCallback:
                     statusCallback(_("Updating existing segmentation: ") + segmentationNode.GetName())
             else:
@@ -657,9 +954,19 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
 
             segmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(inputVolumeNode)
             segmentationNode.CreateDefaultDisplayNodes()
+            segmentation = segmentationNode.GetSegmentation()
+            closedSurfaceRepresentationName = slicer.vtkSegmentationConverter.GetSegmentationClosedSurfaceRepresentationName()
+            if segmentation.ContainsRepresentation(closedSurfaceRepresentationName):
+                removeClosedSurfaceStartTime = time.perf_counter()
+                segmentation.RemoveRepresentation(closedSurfaceRepresentationName)
+                removeClosedSurfaceSec = time.perf_counter() - removeClosedSurfaceStartTime
+                logging.info("Removed existing closed-surface representation in %.2f s.", removeClosedSurfaceSec)
+                if statusCallback:
+                    statusCallback(_("Temporarily removed closed-surface representation to speed segment updates."))
 
             # Add each prompt result as a segment
             for i, prompt in enumerate(textPrompts):
+                segmentStartTime = time.perf_counter()
                 if statusCallback:
                     statusCallback(_("Creating segment: ") + prompt)
                 maskArray = voxtellSeg[i].astype(np.uint8)
@@ -680,7 +987,6 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
                     )
 
                     # Rename the last added segment to the prompt text
-                    segmentation = segmentationNode.GetSegmentation()
                     lastSegmentId = segmentation.GetNthSegmentID(segmentation.GetNumberOfSegments() - 1)
                     segment = segmentation.GetSegment(lastSegmentId)
                     segment.SetName(prompt)
@@ -693,9 +999,17 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
                 finally:
                     # Remove the temporary label map node
                     slicer.mrmlScene.RemoveNode(labelVolumeNode)
+                segmentSec = time.perf_counter() - segmentStartTime
+                logging.info("Segment %d/%d ('%s') created in %.2f s.", i + 1, len(textPrompts), prompt, segmentSec)
+                if statusCallback:
+                    statusCallback(_("Segment '{0}' completed in {1:.2f} s.").format(prompt, segmentSec))
 
         # Show segmentation in 3D
         segmentationNode.CreateClosedSurfaceRepresentation()
+        totalSegmentationSec = time.perf_counter() - segmentationStartTime
+        logging.info("VoxTell segmentation pipeline completed in %.2f s.", totalSegmentationSec)
+        if statusCallback:
+            statusCallback(_("Total segmentation pipeline completed in {0:.2f} s.").format(totalSegmentationSec))
         if statusCallback:
             statusCallback(_("3D surface representation created."))
 
