@@ -1,5 +1,6 @@
 import logging
 import os
+import random
 import sys
 import tempfile
 
@@ -241,9 +242,79 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
     """
 
     MODEL_NAME = "voxtell_v1.1"
+    DEFAULT_TERMINOLOGY_CONTEXT = "Segmentation category and type - 3D Slicer General Anatomy list"
 
     def __init__(self):
         ScriptedLoadableModuleLogic.__init__(self)
+
+    def _randomSegmentColor(self):
+        return (random.random(), random.random(), random.random())
+
+    def _terminologiesLogic(self):
+        terminologiesModule = getattr(slicer.modules, "terminologies", None)
+        if not terminologiesModule:
+            return None
+        return terminologiesModule.logic()
+
+    def _terminologyContextsToTry(self, terminologiesLogic):
+        contexts = [self.DEFAULT_TERMINOLOGY_CONTEXT]
+        try:
+            import vtk
+            loadedTerminologyNames = vtk.vtkStringArray()
+            terminologiesLogic.GetLoadedTerminologyNames(loadedTerminologyNames)
+            for i in range(loadedTerminologyNames.GetNumberOfValues()):
+                contextName = loadedTerminologyNames.GetValue(i)
+                if contextName and contextName not in contexts:
+                    contexts.append(contextName)
+        except Exception:
+            pass
+        return contexts
+
+    def _findTerminologyAndColor(self, segmentName):
+        terminologiesLogic = self._terminologiesLogic()
+        if not terminologiesLogic:
+            return None, None
+
+        entry = slicer.vtkSlicerTerminologyEntry()
+        for contextName in self._terminologyContextsToTry(terminologiesLogic):
+            try:
+                found = terminologiesLogic.FindTypeInTerminologyBy3dSlicerLabel(contextName, segmentName, entry)
+            except Exception:
+                continue
+            if not found:
+                continue
+
+            terminologyEntrySerialized = terminologiesLogic.SerializeTerminologyEntry(entry)
+            if not terminologyEntrySerialized:
+                continue
+
+            typeObject = entry.GetTypeObject()
+            if typeObject and typeObject.GetHasModifiers() and entry.GetTypeModifierObject() and entry.GetTypeModifierObject().GetCodeValue():
+                colorRgb = entry.GetTypeModifierObject().GetRecommendedDisplayRGBValue()
+            elif typeObject:
+                colorRgb = typeObject.GetRecommendedDisplayRGBValue()
+            else:
+                colorRgb = None
+
+            if colorRgb and list(colorRgb) != [127, 127, 127]:
+                color = tuple(component / 255.0 for component in colorRgb)
+            else:
+                color = None
+
+            return terminologyEntrySerialized, color
+
+        return None, None
+
+    def _setSegmentTerminologyAndColor(self, segment, segmentName):
+        terminologyEntrySerialized, terminologyColor = self._findTerminologyAndColor(segmentName)
+        if terminologyEntrySerialized:
+            segment.SetTerminology(terminologyEntrySerialized)
+            if terminologyColor:
+                segment.SetColor(*terminologyColor)
+                return "terminology"
+
+        segment.SetColor(*self._randomSegmentColor())
+        return "random"
 
     def defaultModelPath(self):
         """Return the default path where the VoxTell model is stored."""
@@ -391,7 +462,14 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
                     # Rename the last added segment to the prompt text
                     segmentation = segmentationNode.GetSegmentation()
                     lastSegmentId = segmentation.GetNthSegmentID(segmentation.GetNumberOfSegments() - 1)
-                    segmentation.GetSegment(lastSegmentId).SetName(prompt)
+                    segment = segmentation.GetSegment(lastSegmentId)
+                    segment.SetName(prompt)
+                    colorSource = self._setSegmentTerminologyAndColor(segment, prompt)
+                    if statusCallback:
+                        if colorSource == "terminology":
+                            statusCallback(_("Assigned DICOM terminology and terminology-based color: ") + prompt)
+                        else:
+                            statusCallback(_("No matching terminology found, assigned random color: ") + prompt)
                 finally:
                     # Remove the temporary label map node
                     slicer.mrmlScene.RemoveNode(labelVolumeNode)
