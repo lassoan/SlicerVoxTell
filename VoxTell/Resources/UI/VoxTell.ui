@@ -184,13 +184,56 @@ spleen</string>
        </widget>
       </item>
       <item row="2" column="0">
+        <widget class="QLabel" name="outputSegmentationLabel">
+         <property name="text">
+          <string>Output segmentation:</string>
+         </property>
+        </widget>
+            </item>
+            <item row="2" column="1">
+        <widget class="qMRMLNodeComboBox" name="outputSegmentationSelector">
+         <property name="nodeTypes">
+          <stringlist>
+           <string>vtkMRMLSegmentationNode</string>
+          </stringlist>
+         </property>
+         <property name="selectNodeUponCreation">
+          <bool>true</bool>
+         </property>
+         <property name="addEnabled">
+          <bool>true</bool>
+         </property>
+         <property name="removeEnabled">
+          <bool>false</bool>
+         </property>
+         <property name="noneEnabled">
+          <bool>true</bool>
+         </property>
+        <property name="noneDisplay">
+         <string>(Create new segmentation)</string>
+        </property>
+         <property name="showHidden">
+          <bool>false</bool>
+         </property>
+         <property name="showChildNodeTypes">
+          <bool>false</bool>
+         </property>
+         <property name="setMRMLScene">
+          <string/>
+         </property>
+         <property name="toolTip">
+          <string>Select an existing segmentation to update, or create a new one.</string>
+         </property>
+        </widget>
+            </item>
+            <item row="3" column="0">
        <widget class="QLabel" name="deviceLabel">
         <property name="text">
          <string>Device:</string>
         </property>
        </widget>
       </item>
-      <item row="2" column="1">
+            <item row="3" column="1">
        <widget class="QComboBox" name="deviceComboBox">
         <item>
          <property name="text">
@@ -242,7 +285,7 @@ spleen</string>
    <item>
     <widget class="QLabel" name="statusLabel">
      <property name="text">
-      <string>Note: GPU with ≥8 GB VRAM is recommended. First run downloads the model (~4 GB) if not already cached.</string>
+        <string/>
      </property>
      <property name="wordWrap">
       <bool>true</bool>
@@ -287,6 +330,22 @@ spleen</string>
    <sender>VoxTell</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>inputVolumeSelector</receiver>
+   <slot>setMRMLScene(vtkMRMLScene*)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>162</x>
+     <y>281</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>162</x>
+     <y>281</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>VoxTell</sender>
+   <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
+   <receiver>outputSegmentationSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
    <hints>
     <hint type="sourcelabel">

@@ -53,6 +53,7 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)
         self.logic = None
+        self._didFirstEnterCheck = False
 
     def setup(self):
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -75,14 +76,16 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Connections
         self.ui.inputVolumeSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.onInputVolumeChanged)
         self.ui.promptsTextEdit.connect("textChanged()", self.updateApplyButtonState)
+        self.ui.deviceComboBox.connect("currentIndexChanged(int)", self.updateDeviceMemoryWarning)
         self.ui.applyButton.connect("clicked(bool)", self.onApplyButton)
         self.ui.installDependenciesButton.connect("clicked(bool)", self.onInstallDependenciesButton)
         self.ui.modelPathBrowseButton.connect("clicked(bool)", self.onBrowseModelPath)
         self.ui.downloadModelButton.connect("clicked(bool)", self.onDownloadModel)
 
-        self.updateSetupStatus()
+        self.updateSetupStatus(collapseIfReady=True, collapseModelIfValid=True)
         self.selectDefaultInputVolume()
         self.updateApplyButtonState()
+        self.updateDeviceMemoryWarning()
 
     def cleanup(self):
         """Called when the application closes and the module widget is destroyed."""
@@ -90,7 +93,9 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def enter(self):
         """Called each time the user opens this module."""
-        pass
+        firstEnter = not self._didFirstEnterCheck
+        self.updateSetupStatus(collapseIfReady=firstEnter, collapseModelIfValid=firstEnter)
+        self._didFirstEnterCheck = True
 
     def exit(self):
         """Called each time the user exits this module."""
@@ -119,9 +124,30 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         prompts = self.ui.promptsTextEdit.toPlainText().strip()
         self.ui.applyButton.enabled = (inputVolume is not None and len(prompts) > 0)
 
-    def updateSetupStatus(self):
+    def updateDeviceMemoryWarning(self, _index=None):
+        if not hasattr(self.ui, "statusLabel"):
+            return
+
+        warningText = ""
+        useGpu = (self.ui.deviceComboBox.currentIndex == 0)
+        if useGpu:
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    totalMemoryBytes = torch.cuda.get_device_properties(0).total_memory
+                    totalMemoryGb = totalMemoryBytes / (1024.0 ** 3)
+                    if totalMemoryGb < 8.0:
+                        warningText = _("Warning: Detected GPU memory is {0:.1f} GB. At least 8 GB is recommended.").format(totalMemoryGb)
+            except Exception:
+                warningText = ""
+
+        self.ui.statusLabel.text = warningText
+        self.ui.statusLabel.visible = bool(warningText)
+
+    def updateSetupStatus(self, collapseIfReady=False, collapseModelIfValid=False):
         """Update the status labels in the Setup section."""
-        if self.logic.areDependenciesInstalled():
+        dependenciesInstalled = self.logic.areDependenciesInstalled()
+        if dependenciesInstalled:
             self.ui.dependenciesStatusLabel.text = _("Installed")
             self.ui.dependenciesStatusLabel.setStyleSheet("color: green")
         else:
@@ -129,14 +155,23 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.ui.dependenciesStatusLabel.setStyleSheet("color: red")
 
         modelPath = self.ui.modelPathLineEdit.text.strip() or self.logic.defaultModelPath()
-        if self.logic.isModelInstalled(modelPath):
+        modelInstalled = self.logic.isModelInstalled(modelPath)
+        if modelInstalled:
             self.ui.modelStatusLabel.text = _("Installed")
             self.ui.modelStatusLabel.setStyleSheet("color: green")
             if not self.ui.modelPathLineEdit.text.strip():
                 self.ui.modelPathLineEdit.text = self.logic.defaultModelPath()
+                modelPath = self.ui.modelPathLineEdit.text.strip()
         else:
             self.ui.modelStatusLabel.text = _("Not installed")
             self.ui.modelStatusLabel.setStyleSheet("color: red")
+
+        if collapseIfReady and dependenciesInstalled and modelInstalled:
+            self.ui.dependenciesCollapsibleButton.collapsed = True
+
+        modelPathIsValidAndSet = bool(modelPath) and self.logic.isModelInstalled(modelPath)
+        if collapseModelIfValid and modelPathIsValidAndSet:
+            self.ui.modelCollapsibleButton.collapsed = True
 
     def onInstallDependenciesButton(self):
         qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
@@ -186,6 +221,8 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.errorDisplay(_("Please select an input volume."))
             return
 
+        outputSegmentation = self.ui.outputSegmentationSelector.currentNode()
+
         promptsText = self.ui.promptsTextEdit.toPlainText().strip()
         if not promptsText:
             slicer.util.errorDisplay(_("Please enter at least one text prompt."))
@@ -215,10 +252,12 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 prompts,
                 modelPath,
                 useGpu,
+                outputSegmentationNode=outputSegmentation,
                 statusCallback=self.appendStatusMessage,
             )
+            self.ui.outputSegmentationSelector.setCurrentNode(segmentationNode)
             self.appendStatusMessage(_("Segmentation completed successfully."))
-            self.appendStatusMessage(_("Created segmentation: ") + segmentationNode.GetName())
+            self.appendStatusMessage(_("Output segmentation: ") + segmentationNode.GetName())
         except Exception as e:
             self.appendStatusMessage(_("Segmentation failed: ") + str(e))
             slicer.util.errorDisplay(_("Segmentation failed:\n") + str(e))
@@ -326,7 +365,10 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
     def areDependenciesInstalled(self):
         """Check if the required Python packages are installed."""
         import importlib.util
-        return importlib.util.find_spec("voxtell") is not None
+        return (
+            importlib.util.find_spec("voxtell") is not None
+            and importlib.util.find_spec("huggingface_hub") is not None
+        )
 
     def isModelInstalled(self, modelPath=None):
         """Check if the VoxTell model is installed at the given path."""
@@ -383,13 +425,14 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
         logging.info(f"Model downloaded to: {modelPath}")
         return modelPath
 
-    def runSegmentation(self, inputVolumeNode, textPrompts, modelPath, useGpu=True, statusCallback=None):
+    def runSegmentation(self, inputVolumeNode, textPrompts, modelPath, useGpu=True, outputSegmentationNode=None, statusCallback=None):
         """Run VoxTell segmentation.
 
         :param inputVolumeNode: Input vtkMRMLScalarVolumeNode.
         :param textPrompts: List of text prompts (strings).
         :param modelPath: Path to the VoxTell model directory.
         :param useGpu: Whether to use GPU for inference.
+        :param outputSegmentationNode: Optional existing vtkMRMLSegmentationNode to update.
         :param statusCallback: Optional callable that receives status text updates.
         :return: The created vtkMRMLSegmentationNode.
         """
@@ -432,9 +475,18 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
             if statusCallback:
                 statusCallback(_("Prediction completed."))
 
-            # Create a segmentation node in Slicer
-            segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
-            segmentationNode.SetName(inputVolumeNode.GetName() + "_VoxTell")
+            if outputSegmentationNode is not None:
+                segmentationNode = outputSegmentationNode
+                segmentationNode.GetSegmentation().RemoveAllSegments()
+                if statusCallback:
+                    statusCallback(_("Updating existing segmentation: ") + segmentationNode.GetName())
+            else:
+                # Create a segmentation node in Slicer
+                segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+                segmentationNode.SetName(inputVolumeNode.GetName() + "_VoxTell")
+                if statusCallback:
+                    statusCallback(_("Created new segmentation: ") + segmentationNode.GetName())
+
             segmentationNode.SetReferenceImageGeometryParameterFromVolumeNode(inputVolumeNode)
             segmentationNode.CreateDefaultDisplayNodes()
 
@@ -449,8 +501,8 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
                 maskNiftiPath = os.path.join(tmpDir, f"mask_{i}.nii.gz")
                 imageIO.write_seg(maskArray, maskNiftiPath, imageProperties)
 
-                loaded, labelVolumeNode = slicer.util.loadLabelVolume(maskNiftiPath, returnNode=True)
-                if not loaded or labelVolumeNode is None:
+                labelVolumeNode = slicer.util.loadLabelVolume(maskNiftiPath)
+                if labelVolumeNode is None:
                     raise RuntimeError(f"Failed to load generated label volume: {maskNiftiPath}")
 
                 try:
