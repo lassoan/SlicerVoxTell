@@ -7,9 +7,9 @@ project(VoxTell)
 set(EXTENSION_HOMEPAGE "https://github.com/lassoan/SlicerVoxTell")
 set(EXTENSION_CATEGORY "Segmentation")
 set(EXTENSION_CONTRIBUTORS "Andras Lasso (PerkLab, Queen's University)")
-set(EXTENSION_DESCRIPTION "Run VoxTell free-text promptable 3D medical image segmentation in 3D Slicer.")
+set(EXTENSION_DESCRIPTION "VoxTell lets users segment 3D medical scans in 3D Slicer using plain-language prompts (for example, liver or right kidney).")
 set(EXTENSION_ICONURL "https://raw.githubusercontent.com/lassoan/SlicerVoxTell/main/VoxTell/Resources/Icons/VoxTell.png")
-set(EXTENSION_SCREENSHOTURLS "https://raw.githubusercontent.com/lassoan/SlicerVoxTell/main/Screenshot01.jpg")
+set(EXTENSION_SCREENSHOTURLS "https://raw.githubusercontent.com/lassoan/SlicerVoxTell/main/screenshot01.jpg")
 set(EXTENSION_DEPENDS "PyTorch")
 
 #-----------------------------------------------------------------------------

@@ -1,42 +1,38 @@
 # SlicerVoxTell
 
-3D Slicer extension for [VoxTell](https://github.com/MIC-DKFZ/VoxTell) — a free-text promptable universal 3D medical image segmentation model.
+SlicerVoxTell is a 3D Slicer extension that segments structures in CT, MRI, and PET volumes from plain-language text prompts (for example, "liver" or "right kidney").
+It is intended for research workflows where users need fast, prompt-based 3D segmentation directly in Slicer.
 
-VoxTell accepts free-form natural language descriptions (e.g., "liver", "right kidney", "brain tumor") and generates volumetric 3D segmentation masks for CT, MRI, and PET images.
+![SlicerVoxTell screenshot](https://raw.githubusercontent.com/lassoan/SlicerVoxTell/main/screenshot01.jpg)
 
-## Features
+Developers of this extension are not affiliated with developers of the underlying [VoxTell model](https://github.com/MIC-DKFZ/VoxTell) developed at DKFZ by Maximilian Rokuss et al.
 
-- 🗣️ **Text-based prompting**: Segment anatomical structures and pathologies using natural language
-- 🧠 **Multi-modality support**: CT, MRI, and PET volumetric data
-- 🔌 **Seamless 3D Slicer integration**: Select volumes from the scene, view segmentation results as segments
-- ⚙️ **Automatic dependency installation**: Install `voxtell` and download model weights from within 3D Slicer
+## Modules
+
+- **VoxTell**: Runs VoxTell free-text 3D segmentation on the selected input volume and creates/updates a Slicer segmentation node with one segment per prompt.
+
 
 ## Installation
 
-1. Open 3D Slicer
-2. Go to **Edit > Application Settings > Modules** and add the path to this repository, or install via the Extension Manager once the extension is published
-3. Restart 3D Slicer
+GPU with at least 8 GB VRAM is strongly recommended for practically usable inference speed (typically less than 1 minute).
 
-## Usage
+1. Open 3D Slicer.
+2. Install `VoxTell` extension from Extension Manager.
+3. Restart 3D Slicer.
 
-1. Open the **VoxTell** module (under **Segmentation**)
-2. **Install dependencies**: Click **Install dependencies** to install the `voxtell` Python package
-3. **Get the model**: Either:
-   - Click **Download model** to automatically download the model weights from Hugging Face (~4 GB), or
-   - Specify the path to an existing model directory
-4. **Select input**: Choose a volume from the scene
-5. **Enter prompts**: Type free-text descriptions, one per line (e.g., `liver`, `right kidney`, `spleen`)
-6. **Run segmentation**: Click **Run segmentation**
+## Tutorial
 
-The results appear as segments in a new segmentation node named `<VolumeName>_VoxTell`.
 
-## Important Notes
+1. Open **Sample Data** and load **CTACardio**.
+2. Open **VoxTell** (category: **Segmentation**).
+3. In **Setup**, click **Install dependencies and model**
+4. In **Inputs**, select the input volume (CTACardio should be selected by default).
+5. Enter prompts, one per line (for example: `liver`, `ribs`, `vertebrae`, `aorta`).
+6. Choose device (**GPU (CUDA)** recommended when available) and click **Run segmentation**.
+7. If a GPU is available, segmentation result should be available in about 30 seconds.
 
-- ⚠️ **Image Orientation**: Images must be in RAS orientation for correct anatomical localization. VoxTell uses `NibabelIOWithReorient` for reorientation.
-- **GPU recommended**: A GPU with ≥8 GB VRAM is strongly recommended for reasonable inference speed.
-- **Research use only**: VoxTell is a research tool and should not be used for clinical decision-making without expert review.
-
-## Citation
+## Publication
+The extension uses VoxTell, which is described in this paper (arXiv): https://arxiv.org/abs/2511.11450
 
 If you use this extension in your research, please cite:
 
@@ -48,6 +44,20 @@ If you use this extension in your research, please cite:
       eprint={2511.11450},
       archivePrefix={arXiv},
       primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2511.11450},
+      url={https://arxiv.org/abs/2511.11450}
 }
 ```
+
+## Safety and Privacy
+
+- The extension does **not** send data to any external services.
+- Model files are downloaded from the official VoxTell Hugging Face repository (`mrokuss/VoxTell`).
+
+## License
+
+This extension is distributed under the **MIT License** (see [LICENSE.txt](LICENSE.txt)).
+
+## Support and Maintenance
+
+- Maintainers monitor repository issues and pull requests.
+- Maintainers also respond to @mentions on the Slicer Forum: https://discourse.slicer.org
