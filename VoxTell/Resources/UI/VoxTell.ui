@@ -1,0 +1,269 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>VoxTell</class>
+ <widget class="qMRMLWidget" name="VoxTell">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>500</width>
+    <height>700</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>VoxTell</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="ctkCollapsibleButton" name="dependenciesCollapsibleButton">
+     <property name="text">
+      <string>Setup</string>
+     </property>
+     <layout class="QFormLayout" name="dependenciesFormLayout">
+      <item row="0" column="0" colspan="2">
+       <widget class="QLabel" name="dependenciesLabel">
+        <property name="text">
+         <string>Install the required Python packages (voxtell) before running segmentation.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0" colspan="2">
+       <widget class="QPushButton" name="installDependenciesButton">
+        <property name="text">
+         <string>Install dependencies</string>
+        </property>
+        <property name="toolTip">
+         <string>Install the voxtell Python package and its dependencies.</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="ctkCollapsibleButton" name="modelCollapsibleButton">
+     <property name="text">
+      <string>Model</string>
+     </property>
+     <layout class="QFormLayout" name="modelFormLayout">
+      <item row="0" column="0">
+       <widget class="QLabel" name="modelPathLabel">
+        <property name="text">
+         <string>Model directory:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <layout class="QHBoxLayout" name="modelPathHBoxLayout">
+        <item>
+         <widget class="QLineEdit" name="modelPathLineEdit">
+          <property name="placeholderText">
+           <string>Path to VoxTell model directory</string>
+          </property>
+          <property name="toolTip">
+           <string>Path to the VoxTell model directory (e.g. /path/to/voxtell_v1.1).</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="modelPathBrowseButton">
+          <property name="text">
+           <string>Browse...</string>
+          </property>
+          <property name="toolTip">
+           <string>Browse to select an existing VoxTell model directory.</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item row="1" column="0" colspan="2">
+       <widget class="QPushButton" name="downloadModelButton">
+        <property name="text">
+         <string>Download model (voxtell_v1.1)</string>
+        </property>
+        <property name="toolTip">
+         <string>Download the VoxTell model weights from Hugging Face. Requires an internet connection.</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="ctkCollapsibleButton" name="inputsCollapsibleButton">
+     <property name="text">
+      <string>Inputs</string>
+     </property>
+     <layout class="QFormLayout" name="inputsFormLayout">
+      <item row="0" column="0">
+       <widget class="QLabel" name="inputVolumeLabel">
+        <property name="text">
+         <string>Input volume:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="qMRMLNodeComboBox" name="inputVolumeSelector">
+        <property name="nodeTypes">
+         <stringlist>
+          <string>vtkMRMLScalarVolumeNode</string>
+         </stringlist>
+        </property>
+        <property name="selectNodeUponCreation">
+         <bool>true</bool>
+        </property>
+        <property name="addEnabled">
+         <bool>false</bool>
+        </property>
+        <property name="removeEnabled">
+         <bool>false</bool>
+        </property>
+        <property name="noneEnabled">
+         <bool>true</bool>
+        </property>
+        <property name="showHidden">
+         <bool>false</bool>
+        </property>
+        <property name="showChildNodeTypes">
+         <bool>false</bool>
+        </property>
+        <property name="setMRMLScene">
+         <string/>
+        </property>
+        <property name="toolTip">
+         <string>Select the input volume to segment.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="promptsLabel">
+        <property name="text">
+         <string>Text prompts:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QPlainTextEdit" name="promptsTextEdit">
+        <property name="placeholderText">
+         <string>Enter one prompt per line, e.g.:
+liver
+right kidney
+spleen</string>
+        </property>
+        <property name="toolTip">
+         <string>Enter free-text descriptions of anatomical structures or pathologies, one per line (e.g., "liver", "right kidney", "brain tumor").</string>
+        </property>
+        <property name="minimumSize">
+         <size>
+          <width>0</width>
+          <height>80</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="deviceLabel">
+        <property name="text">
+         <string>Device:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QComboBox" name="deviceComboBox">
+        <item>
+         <property name="text">
+          <string>GPU (CUDA)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>CPU</string>
+         </property>
+        </item>
+        <property name="toolTip">
+         <string>Select inference device. GPU (CUDA) is strongly recommended for reasonable performance.</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QPushButton" name="applyButton">
+     <property name="text">
+      <string>Run segmentation</string>
+     </property>
+     <property name="toolTip">
+      <string>Run VoxTell segmentation with the specified prompts on the selected volume.</string>
+     </property>
+     <property name="enabled">
+      <bool>false</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="statusLabel">
+     <property name="text">
+      <string>Note: GPU with ≥8 GB VRAM is recommended. First run downloads the model (~4 GB) if not already cached.</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <spacer name="verticalSpacer">
+     <property name="orientation">
+      <enum>Qt::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>40</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+  </layout>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>ctkCollapsibleButton</class>
+   <extends>QWidget</extends>
+   <header>ctkCollapsibleButton.h</header>
+  </customwidget>
+  <customwidget>
+   <class>qMRMLNodeComboBox</class>
+   <extends>QWidget</extends>
+   <header>qMRMLNodeComboBox.h</header>
+  </customwidget>
+  <customwidget>
+   <class>qMRMLWidget</class>
+   <extends>QWidget</extends>
+   <header>qMRMLWidget.h</header>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>VoxTell</sender>
+   <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
+   <receiver>inputVolumeSelector</receiver>
+   <slot>setMRMLScene(vtkMRMLScene*)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>162</x>
+     <y>281</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>162</x>
+     <y>281</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
+</ui>
