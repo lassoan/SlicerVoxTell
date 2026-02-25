@@ -251,6 +251,8 @@ class VoxTellWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         segmentTableView = self.ui.segmentTableView
         segmentationNode = self.ui.outputSegmentationSelector.currentNode()
         segmentTableView.setSegmentationNode(segmentationNode)
+        if hasattr(self.ui, "segmentationShow3DButton"):
+            self.ui.segmentationShow3DButton.setSegmentationNode(segmentationNode)
 
     def _selectedSegmentIdsInTable(self):
         if not hasattr(self.ui, "segmentTableView"):

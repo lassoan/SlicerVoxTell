@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>500</width>
-    <height>700</height>
+    <width>405</width>
+    <height>751</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -224,9 +224,16 @@
       <string>Results</string>
      </property>
      <property name="collapsed">
-      <bool>true</bool>
+      <bool>false</bool>
      </property>
      <layout class="QVBoxLayout" name="resultsVerticalLayout">
+      <item>
+       <widget class="qMRMLSegmentationShow3DButton" name="segmentationShow3DButton">
+        <property name="toolTip">
+         <string>Show or hide all segments in 3D.</string>
+        </property>
+       </widget>
+      </item>
       <item>
        <widget class="qMRMLSegmentsTableView" name="segmentTableView">
         <property name="minimumSize">
@@ -377,6 +384,11 @@
    <container>1</container>
   </customwidget>
   <customwidget>
+   <class>ctkMenuButton</class>
+   <extends>QPushButton</extends>
+   <header>ctkMenuButton.h</header>
+  </customwidget>
+  <customwidget>
    <class>qMRMLNodeComboBox</class>
    <extends>QWidget</extends>
    <header>qMRMLNodeComboBox.h</header>
@@ -391,6 +403,11 @@
    <class>qMRMLSegmentsTableView</class>
    <extends>qMRMLWidget</extends>
    <header>qMRMLSegmentsTableView.h</header>
+  </customwidget>
+  <customwidget>
+   <class>qMRMLSegmentationShow3DButton</class>
+   <extends>ctkMenuButton</extends>
+   <header>qMRMLSegmentationShow3DButton.h</header>
   </customwidget>
  </customwidgets>
  <resources/>
@@ -431,6 +448,22 @@
    <sender>VoxTell</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>segmentTableView</receiver>
+   <slot>setMRMLScene(vtkMRMLScene*)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>162</x>
+     <y>281</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>162</x>
+     <y>281</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>VoxTell</sender>
+   <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
+   <receiver>segmentationShow3DButton</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
    <hints>
     <hint type="sourcelabel">
