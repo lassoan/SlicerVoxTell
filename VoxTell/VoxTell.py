@@ -484,7 +484,6 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
     MODEL_NAME = "voxtell_v1.1"
     DEFAULT_TERMINOLOGY_CONTEXT = "Segmentation category and type - 3D Slicer General Anatomy list"
     TORCH_VERSION_REQUIREMENT = "!=2.9.*"  # avoid PyTorch 2.9.x due to known compatibility issues with VoxTell as of Feb 2026
-    FAST_INFERENCE_STEP_SIZE = 0.75
 
     def __init__(self):
         ScriptedLoadableModuleLogic.__init__(self)
@@ -657,34 +656,6 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
         )
 
         return textEmbeddings, cacheHits, len(missingPrompts), embedSec, assembleSec
-
-    def _buildFastInferenceKwargs(self, predictor):
-        import inspect
-
-        method = predictor.predict_sliding_window_return_logits
-        parameters = inspect.signature(method).parameters
-        kwargs = {}
-
-        if "step_size" in parameters:
-            kwargs["step_size"] = self.FAST_INFERENCE_STEP_SIZE
-        if "overlap" in parameters:
-            kwargs["overlap"] = 1.0 - self.FAST_INFERENCE_STEP_SIZE
-        if "use_gaussian" in parameters:
-            kwargs["use_gaussian"] = False
-        if "do_tta" in parameters:
-            kwargs["do_tta"] = False
-        if "use_mirroring" in parameters:
-            kwargs["use_mirroring"] = False
-
-        return kwargs
-
-    def _predictSlidingWindowLogits(self, predictor, preprocessedData, textEmbeddings, statusCallback=None):
-        inferenceKwargs = self._buildFastInferenceKwargs(predictor)
-        if inferenceKwargs:
-            logging.info("Running fast sliding-window inference kwargs: %s", str(inferenceKwargs))
-            if statusCallback:
-                statusCallback(_("Using fast sliding-window settings."))
-        return predictor.predict_sliding_window_return_logits(preprocessedData, textEmbeddings, **inferenceKwargs)
 
     def _randomSegmentColor(self):
         return (random.random(), random.random(), random.random())
@@ -991,43 +962,8 @@ class VoxTellLogic(ScriptedLoadableModuleLogic):
             if statusCallback:
                 statusCallback(_("Running sliding-window prediction..."))
             inferenceStartTime = time.perf_counter()
-            ampEnabled = (device.type == "cuda")
-            if ampEnabled and statusCallback:
-                statusCallback(_("Using CUDA mixed precision for inference."))
-            try:
-                with torch.inference_mode():
-                    if ampEnabled:
-                        with torch.autocast(device_type="cuda", dtype=torch.float16):
-                            prediction = self._predictSlidingWindowLogits(
-                                predictor,
-                                preprocessedData,
-                                textEmbeddings,
-                                statusCallback=statusCallback,
-                            )
-                    else:
-                        prediction = self._predictSlidingWindowLogits(
-                            predictor,
-                            preprocessedData,
-                            textEmbeddings,
-                            statusCallback=statusCallback,
-                        )
-            except Exception as inferenceException:
-                if ampEnabled:
-                    logging.warning(
-                        "Mixed-precision inference failed, retrying in full precision. Error: %s",
-                        str(inferenceException),
-                    )
-                    if statusCallback:
-                        statusCallback(_("Mixed precision failed, retrying full-precision inference."))
-                    with torch.inference_mode():
-                        prediction = self._predictSlidingWindowLogits(
-                            predictor,
-                            preprocessedData,
-                            textEmbeddings,
-                            statusCallback=statusCallback,
-                        )
-                else:
-                    raise
+            with torch.inference_mode():
+                prediction = predictor.predict_sliding_window_return_logits(preprocessedData, textEmbeddings)
             inferenceSec = time.perf_counter() - inferenceStartTime
             logging.info("Sliding-window inference completed in %.2f s (device=%s).", inferenceSec, str(device))
             if statusCallback:
